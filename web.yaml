@@ -1,0 +1,201 @@
+heat_template_version: 2016-10-14
+
+description: >
+  HOT template to create a private network, a router to the public
+  network, and two servers in the new network. Floating IP addresses
+  are assigned to each server so they are routable from the public network.
+
+parameters:
+  key_name:
+    type: string
+    default: key_duminyj
+    description: Name of keypair to assign to servers
+  image:
+    type: string
+    default: Ubuntu 16.04 LTS
+    description: Name of image to use for servers
+  flavor:
+    type: string
+    default: m1.small
+    description: Flavor to use for servers
+  public_net:
+    type: string
+    default: floating_nonprod
+    description: >
+      ID or name of public network for which floating IP addresses will be allocated
+
+resources:
+  private_net:
+    type: OS::Neutron::Net
+    properties:
+      name: web_private_net
+
+  subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: private_net }
+      cidr: 10.4.2.0/24
+      gateway_ip: 10.4.2.1
+      allocation_pools:
+        - start: 10.4.2.10
+          end: 10.4.2.50
+
+  router:
+    type: OS::Neutron::Router
+    properties:
+      external_gateway_info:
+        network: { get_param: public_net }
+
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: subnet }
+
+  allow_ssh:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: Allow SSH
+      rules:
+        - direction: ingress
+          protocol: tcp
+          port_range_max: 22
+          port_range_min: 22
+          remote_ip_prefix: 0.0.0.0/0
+
+  allow_icmp:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: Allow ICMP
+      rules:
+        - protocol: icmp
+          remote_ip_prefix: 0.0.0.0/0
+
+  allow_web:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: Allow web
+      rules:
+        - direction: ingress
+          protocol: tcp
+          port_range_max: 80
+          port_range_min: 80
+          remote_ip_prefix: 0.0.0.0/0
+
+  jumpbox:
+    type: OS::Nova::Server
+    properties:
+      name: jumpbox
+      image: { get_param: image }
+      flavor: { get_param: flavor }
+      key_name: { get_param: key_name }
+      networks:
+        - network: { get_resource: private_net }
+          subnet: { get_resource: subnet }
+      security_groups:
+        - { get_resource: allow_ssh }
+        - { get_resource: allow_icmp }
+
+  asg:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      min_size: 1
+      max_size: 5
+      resource:
+        type: lb_server.yaml
+        properties:
+          network_id: { get_resource: private_net }
+          subnet_id: { get_resource: subnet }
+          pool_id: { get_resource: pool }
+  lb:
+    type: OS::Neutron::LBaaS::LoadBalancer
+    properties:
+      vip_subnet: {get_resource: subnet}
+
+  listener:
+    type: OS::Neutron::LBaaS::Listener
+    properties:
+      loadbalancer: {get_resource: lb}
+      protocol: HTTP
+      protocol_port: 80
+
+  pool:
+    type: OS::Neutron::LBaaS::Pool
+    properties:
+      listener: {get_resource: listener}
+      lb_algorithm: ROUND_ROBIN
+      protocol: HTTP
+
+  web_server_scaleup_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: asg}
+      cooldown: 60
+      scaling_adjustment: 1
+
+  web_server_scaledown_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: asg}
+      cooldown: 60
+      scaling_adjustment: -1
+
+  cpu_alarm_high:
+    type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    properties:
+      description: Scale up if CPU > 40%
+      metric: cpu_util
+      aggregation_method: mean
+      granularity: 300
+      evaluation_periods: 1
+      threshold: 80
+      resource_type: instance
+      comparison_operator: gt
+      alarm_actions:
+        - str_replace:
+            template: trust+url
+            params:
+              url: {get_attr: [web_server_scaleup_policy, signal_url]}
+      query:
+        list_join:
+          - ''
+          - - {'=': {server_group: {get_param: "OS::stack_id"}}}
+  cpu_alarm_low:
+    type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    properties:
+      description: Scale down if CPU < 15% for 5 minutes
+      metric: cpu_util
+      aggregation_method: mean
+      granularity: 300
+      evaluation_periods: 1
+      threshold: 15
+      resource_type: instance
+      comparison_operator: lt
+      alarm_actions:
+        - str_replace:
+            template: trust+url
+            params:
+              url: {get_attr: [web_server_scaledown_policy, signal_url]}
+      query:
+        list_join:
+          - ''
+          - - {'=': {server_group: {get_param: "OS::stack_id"}}}
+
+outputs:
+  current_size:
+    value: {get_attr: [asg, current_size]}
+  scale_up_url:
+    value: {get_attr: [web_server_scaleup_policy, alarm_url]}
+  scale_dn_url:
+    value: {get_attr: [web_server_scaledown_policy, alarm_url]}
+  gnocchi_query:
+    value:
+      str_replace:
+        template: >
+          gnocchi measures aggregation --resource-type instance
+          --query 'server_group="stackval"'
+          --granularity 300 --aggregation mean -m cpu_util
+        params:
+          stackval: { get_param: "OS::stack_id" }
