@@ -1,14 +1,12 @@
 heat_template_version: 2016-10-14
-
 description: >
   HOT template to create a private network, a router to the public
   network, and two servers in the new network. Floating IP addresses
   are assigned to each server so they are routable from the public network.
-
 parameters:
   key_name:
     type: string
-    default: key_duminyj
+    default: phoenix
     description: Name of keypair to assign to servers
   image:
     type: string
@@ -23,13 +21,11 @@ parameters:
     default: floating_nonprod
     description: >
       ID or name of public network for which floating IP addresses will be allocated
-
 resources:
   private_net:
     type: OS::Neutron::Net
     properties:
       name: web_private_net
-
   subnet:
     type: OS::Neutron::Subnet
     properties:
@@ -39,19 +35,16 @@ resources:
       allocation_pools:
         - start: 10.4.2.10
           end: 10.4.2.50
-
   router:
     type: OS::Neutron::Router
     properties:
       external_gateway_info:
         network: { get_param: public_net }
-
   router_interface:
     type: OS::Neutron::RouterInterface
     properties:
       router_id: { get_resource: router }
       subnet_id: { get_resource: subnet }
-
   allow_ssh:
     type: OS::Neutron::SecurityGroup
     properties:
@@ -62,7 +55,6 @@ resources:
           port_range_max: 22
           port_range_min: 22
           remote_ip_prefix: 0.0.0.0/0
-
   allow_icmp:
     type: OS::Neutron::SecurityGroup
     properties:
@@ -70,7 +62,6 @@ resources:
       rules:
         - protocol: icmp
           remote_ip_prefix: 0.0.0.0/0
-
   allow_web:
     type: OS::Neutron::SecurityGroup
     properties:
@@ -81,7 +72,6 @@ resources:
           port_range_max: 80
           port_range_min: 80
           remote_ip_prefix: 0.0.0.0/0
-
   jumpbox:
     type: OS::Nova::Server
     properties:
@@ -95,7 +85,6 @@ resources:
       security_groups:
         - { get_resource: allow_ssh }
         - { get_resource: allow_icmp }
-
   asg:
     type: OS::Heat::AutoScalingGroup
     properties:
@@ -111,21 +100,18 @@ resources:
     type: OS::Neutron::LBaaS::LoadBalancer
     properties:
       vip_subnet: {get_resource: subnet}
-
   listener:
     type: OS::Neutron::LBaaS::Listener
     properties:
       loadbalancer: {get_resource: lb}
       protocol: HTTP
       protocol_port: 80
-
   pool:
     type: OS::Neutron::LBaaS::Pool
     properties:
       listener: {get_resource: listener}
       lb_algorithm: ROUND_ROBIN
       protocol: HTTP
-
   web_server_scaleup_policy:
     type: OS::Heat::ScalingPolicy
     properties:
@@ -133,7 +119,6 @@ resources:
       auto_scaling_group_id: {get_resource: asg}
       cooldown: 60
       scaling_adjustment: 1
-
   web_server_scaledown_policy:
     type: OS::Heat::ScalingPolicy
     properties:
@@ -141,7 +126,6 @@ resources:
       auto_scaling_group_id: {get_resource: asg}
       cooldown: 60
       scaling_adjustment: -1
-
   cpu_alarm_high:
     type: OS::Aodh::GnocchiAggregationByResourcesAlarm
     properties:
@@ -182,7 +166,6 @@ resources:
         list_join:
           - ''
           - - {'=': {server_group: {get_param: "OS::stack_id"}}}
-
 outputs:
   current_size:
     value: {get_attr: [asg, current_size]}

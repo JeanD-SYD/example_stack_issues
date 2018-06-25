@@ -15,7 +15,7 @@ resources:
     properties:
       flavor: m1.small
       image: Ubuntu 16.04 LTS
-      key_name: key_duminyj
+      key_name: phoenix
       user_data: |
         #!/bin/bash
         sudo apt update
